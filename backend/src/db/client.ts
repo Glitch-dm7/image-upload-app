@@ -9,9 +9,9 @@ export type { Database };
 let pool: Pool | undefined;
 let db: Database | undefined;
 
-// Real Postgres (Neon) connection used by the running server. Integration
-// tests use a separate in-memory driver — see test/integration/testDb.ts —
-// so this module is never imported from tests.
+// Real Postgres connection (Neon, Supabase, or any other Postgres) used by
+// the running server. Integration tests use a separate in-memory driver —
+// see test/helpers/testDb.ts — so this module is never imported from tests.
 export function getDb(): Database {
   if (!db) {
     const env = loadEnv();

@@ -15,14 +15,18 @@ if (existsSync(envFilePath)) {
   process.loadEnvFile(envFilePath);
 }
 
-// Neon/Supabase hostnames resolve to both an IPv4 and an IPv6 address, and
-// Node's default DNS ordering ("verbatim") doesn't prefer either. On hosts
-// where outbound IPv6 is broken but DNS still returns an AAAA record - WSL2
-// is a common example - `pg` (which uses Node's own DNS resolution) picks
-// the unreachable IPv6 address and fails with ECONNREFUSED/ENETUNREACH that
-// has nothing to do with the credentials being wrong. Forcing IPv4-first
-// avoids that class of failure everywhere, including on hosts with working
-// IPv6, where it's a no-op.
+// Neon hostnames (and Supabase's pooler host) resolve to both an IPv4 and
+// an IPv6 address, and Node's default DNS ordering ("verbatim") doesn't
+// prefer either. On hosts where outbound IPv6 is broken but DNS still
+// returns an AAAA record - WSL2 is a common example - `pg` (which uses
+// Node's own DNS resolution) picks the unreachable IPv6 address and fails
+// with ENETUNREACH that has nothing to do with the credentials being wrong.
+// Forcing IPv4-first avoids that class of failure everywhere, including on
+// hosts with working IPv6, where it's a no-op.
+//
+// This does NOT help Supabase's *direct* db.<ref>.supabase.co host, which
+// is IPv6-only (no IPv4 address to prefer) - that one needs the Session
+// Pooler connection string instead. See the DATABASE_URL comment below.
 dns.setDefaultResultOrder("ipv4first");
 
 // Validation pipeline thresholds. Pure constants — no env/IO — so that
@@ -54,8 +58,13 @@ export const thresholds: Thresholds = {
 };
 
 const envSchema = z.object({
+  // If using Supabase Postgres: this must be the Session Pooler connection
+  // string (Project Settings -> Database -> Connection string -> "Session
+  // pooler", host like aws-0-<region>.pooler.supabase.com:5432), not the
+  // direct db.<ref>.supabase.co:5432 host. The direct host is IPv6-only, and
+  // most hosting platforms (Render included) and WSL2 don't have outbound
+  // IPv6, which fails as ENETUNREACH with nothing wrong in the credentials.
   DATABASE_URL: z.string().min(1),
-  DATABASE_URL_UNPOOLED: z.string().min(1).optional(),
   SUPABASE_S3_ENDPOINT: z.string().min(1),
   SUPABASE_S3_REGION: z.string().min(1).default("us-east-1"),
   SUPABASE_ACCESS_KEY_ID: z.string().min(1),

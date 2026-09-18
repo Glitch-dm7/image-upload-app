@@ -10,7 +10,7 @@ into **Accepted** or **Rejected** by a server-side validation pipeline
 |---|---|
 | Frontend | React + Vite + TypeScript + Tailwind CSS |
 | Backend | Hono (Node runtime) |
-| Database | PostgreSQL (Neon in production; PGlite for local dev/tests) |
+| Database | PostgreSQL (Neon or Supabase in production; PGlite for local dev/tests) |
 | ORM | Drizzle ORM |
 | Object storage | Supabase Storage (S3-compatible API), private bucket |
 | Image processing | `sharp`, `heic-convert` |
@@ -51,15 +51,22 @@ npm run dev --workspace frontend        # http://localhost:5173
 Data doesn't persist across restarts in this mode — that's the point, it's a
 zero-setup way to try the app.
 
-### Run against real Neon + Supabase
+### Run against a real database + Supabase Storage
 
 1. Copy the env files and fill in real values:
    ```bash
    cp backend/.env.example backend/.env
    cp frontend/.env.example frontend/.env
    ```
-2. Create a Postgres database (e.g. a [Neon](https://neon.tech) project) and
-   set `DATABASE_URL` in `backend/.env`.
+2. Create a Postgres database — either a [Neon](https://neon.tech) project,
+   or Supabase's own Postgres (Project Settings -> Database) — and set
+   `DATABASE_URL` in `backend/.env`.
+   > **If using Supabase Postgres:** use the **Session pooler** connection
+   > string, not the direct `db.<project-ref>.supabase.co` host. The direct
+   > host is IPv6-only, and most hosts (Render, WSL2, many CI runners) have
+   > no outbound IPv6, which fails with `ENETUNREACH`-style errors that
+   > look like bad credentials but aren't. The pooler host
+   > (`aws-0-<region>.pooler.supabase.com:5432`) is IPv4-reachable.
 3. Create a private [Supabase Storage](https://supabase.com/storage) bucket
    and set the `SUPABASE_*` vars in `backend/.env`.
 4. Apply migrations: `npm run db:migrate --workspace backend`.
@@ -144,11 +151,16 @@ conversion, per the comments in `backend/test/unit/heicConversion.test.ts`.
 - **Frontend → Vercel.** Root directory `frontend/`, framework preset Vite.
   Set `VITE_API_BASE_URL` to the deployed backend's URL.
 - **Backend → Render** (free tier web service). Root directory `backend/`,
-  build command `npm run build`, start command `npm start`. Set the env vars
-  from `backend/.env.example` (`FRONTEND_ORIGIN` to the deployed frontend's
-  URL) plus run `npm run db:migrate` once against the production
-  `DATABASE_URL` before first use.
-- **Database → Neon**, **Storage → Supabase Storage** (private bucket).
+  build command `npm install --include=dev && npm run build`, start command
+  `npm start`. Set the env vars from `backend/.env.example` (`FRONTEND_ORIGIN`
+  to the deployed frontend's URL — don't set `PORT`, Render injects its own)
+  plus run `npm run db:migrate` once against the production `DATABASE_URL`
+  before first use.
+- **Database → Neon or Supabase Postgres.** If using Supabase, use the
+  **Session pooler** connection string for `DATABASE_URL` — Render (like
+  most hosts) has no outbound IPv6, and Supabase's direct connection host is
+  IPv6-only. See the note in [Setup](#run-against-a-real-database--supabase-storage).
+- **Storage → Supabase Storage** (private bucket).
 
 Because the free tiers of Render/Neon/Supabase can cold-start or spin down,
 the first request after idling may be slow — this is a known property of the
