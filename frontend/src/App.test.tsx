@@ -55,11 +55,30 @@ beforeEach(() => {
 });
 
 describe("App layout", () => {
-  it("renders the upload area and the Accepted/Rejected sections on one page", async () => {
+  it("renders only the upload area when there are no images yet", async () => {
     await renderApp();
     expect(screen.getByRole("button", { name: /upload images/i })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /accepted \(0\)/i })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /rejected \(0\)/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /accepted/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /rejected/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the Accepted section once a file validates as accepted, without showing Rejected", async () => {
+    mockedApi.validateImage.mockResolvedValue(acceptedOutcome);
+    await renderApp();
+
+    selectFiles(getFileInput(), [new File(["bytes"], "photo.jpg", { type: "image/jpeg" })]);
+
+    expect(await screen.findByRole("heading", { name: /accepted \(1\)/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /rejected/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the Rejected section once a file is rejected, without showing Accepted", async () => {
+    await renderApp();
+
+    selectFiles(getFileInput(), [new File(["not an image"], "notes.txt", { type: "text/plain" })]);
+
+    expect(await screen.findByRole("heading", { name: /rejected \(1\)/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /accepted/i })).not.toBeInTheDocument();
   });
 });
 

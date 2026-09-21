@@ -27,62 +27,66 @@ function App() {
           </div>
         )}
 
-        <section className="mt-8">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-600">Accepted ({staged.length + submitted.length})</h2>
-            {staged.length > 0 && (
-              <button
-                type="button"
-                onClick={() => void submit()}
-                disabled={submitting}
-                className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
-              >
-                {submitting ? "Submitting…" : `Submit ${staged.length}`}
-              </button>
-            )}
-          </div>
+        {(staged.length > 0 || submitted.length > 0) && (
+          <section className="mt-8">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-slate-600">Accepted ({staged.length + submitted.length})</h2>
+              {staged.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void submit()}
+                  disabled={submitting}
+                  className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
+                >
+                  {submitting ? "Submitting…" : `Submit ${staged.length}`}
+                </button>
+              )}
+            </div>
 
-          {staged.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-3">
-              {staged.map((item) => (
-                <StagedThumbnail key={item.localKey} item={item} onUnstage={unstage} />
+            {staged.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-3">
+                {staged.map((item) => (
+                  <StagedThumbnail key={item.localKey} item={item} onUnstage={unstage} />
+                ))}
+              </div>
+            )}
+
+            {submitted.length > 0 && (
+              <div className="mt-3 flex flex-col gap-2">
+                {submitted.map((item) => (
+                  <UploadCard
+                    key={item.id}
+                    title={item.originalFilename}
+                    thumbnailUrl={getImageFileUrl(item.id)}
+                    statusLabel="Submitted"
+                    statusVariant="success"
+                    onRemove={() => void deleteSubmitted(item.id)}
+                    removeLabel="Delete"
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {rejected.length > 0 && (
+          <section className="mt-8">
+            <h2 className="text-sm font-semibold text-slate-600">Rejected ({rejected.length})</h2>
+            <div className="mt-3 flex flex-col gap-2">
+              {rejected.map((item) => (
+                <UploadCard
+                  key={item.localKey}
+                  title={item.originalFilename}
+                  thumbnailUrl={item.localPreviewUrl}
+                  statusLabel="Rejected"
+                  statusVariant="error"
+                  rejectionReasons={item.rejectionReasons}
+                  onRemove={() => dismissRejected(item.localKey)}
+                />
               ))}
             </div>
-          )}
-
-          <div className="mt-3 flex flex-col gap-2">
-            {staged.length === 0 && submitted.length === 0 && <p className="text-sm text-slate-400">Nothing here yet.</p>}
-            {submitted.map((item) => (
-              <UploadCard
-                key={item.id}
-                title={item.originalFilename}
-                thumbnailUrl={getImageFileUrl(item.id)}
-                statusLabel="Submitted"
-                statusVariant="success"
-                onRemove={() => void deleteSubmitted(item.id)}
-                removeLabel="Delete"
-              />
-            ))}
-          </div>
-        </section>
-
-        <section className="mt-8">
-          <h2 className="text-sm font-semibold text-slate-600">Rejected ({rejected.length})</h2>
-          <div className="mt-3 flex flex-col gap-2">
-            {rejected.length === 0 && <p className="text-sm text-slate-400">Nothing here yet.</p>}
-            {rejected.map((item) => (
-              <UploadCard
-                key={item.localKey}
-                title={item.originalFilename}
-                thumbnailUrl={item.localPreviewUrl}
-                statusLabel="Rejected"
-                statusVariant="error"
-                rejectionReasons={item.rejectionReasons}
-                onRemove={() => dismissRejected(item.localKey)}
-              />
-            ))}
-          </div>
-        </section>
+          </section>
+        )}
       </div>
     </div>
   );
