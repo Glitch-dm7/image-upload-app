@@ -1,5 +1,6 @@
 export type ImageStatus = "pending" | "accepted" | "rejected";
 
+/** A persisted image, as the API returns it. In practice `status` is always `"accepted"` - rejected uploads are never persisted. */
 export interface ImageRecord {
   id: string;
   originalFilename: string;
@@ -21,22 +22,50 @@ export interface ImageListResponse {
   nextCursor: string | null;
 }
 
-/** A client-side upload-in-progress, before/while the server has an opinion. */
-export interface UploadItem {
-  /** The server's image id once known; a temporary client-generated id until then. */
-  id: string;
-  /**
-   * Stable identity for this card, set once and never changed - unlike
-   * `id`, which is replaced by the real server id once the upload resolves.
-   * Using `id` as a React list key would make that transition look like a
-   * totally different item (remounting the card, dropping any in-flight
-   * state) instead of the same item just getting an id assigned.
-   */
+/** What POST /images/validate (and a rejected POST /images/submit) returns. */
+export interface ValidationOutcome {
+  status: "accepted" | "rejected";
+  rejectionReasons: string[];
+  width: number | null;
+  height: number | null;
+  phash: string | null;
+  faceCount: number | null;
+  blurScore: number | null;
+  mimeType: string | null;
+}
+
+/** Shown briefly while POST /images/validate is in flight for a dropped file. */
+export interface ValidatingItem {
   localKey: string;
   originalFilename: string;
-  /** Local object URL for an immediate preview, swapped for the server-hosted file once accepted. */
-  localPreviewUrl?: string;
-  status: ImageStatus | "uploading" | "client-rejected";
-  rejectionReasons: string[];
+  localPreviewUrl: string;
+}
+
+/**
+ * Validated as accepted, not yet submitted. Keeps the real `File` so
+ * Submit can resend its bytes - nothing is held server-side in between
+ * validating and submitting.
+ */
+export interface StagedItem {
+  localKey: string;
+  file: File;
+  originalFilename: string;
+  localPreviewUrl: string;
+  submitting: boolean;
+  submitError?: string;
+}
+
+/** Persisted (a submit success, or hydrated from GET /images on load). */
+export interface SubmittedItem {
+  id: string;
+  originalFilename: string;
   createdAt: string;
+}
+
+/** Client- or server-rejected. Informational only - never submitted. */
+export interface RejectedItem {
+  localKey: string;
+  originalFilename: string;
+  localPreviewUrl?: string;
+  rejectionReasons: string[];
 }

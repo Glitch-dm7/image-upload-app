@@ -1,50 +1,31 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { deleteImage as apiDeleteImage, getImage, listImages, uploadImage } from "../api/client.js";
+import { useCallback, useEffect, useState } from "react";
+import { deleteImage as apiDeleteImage, listImages, submitImage, validateImage } from "../api/client.js";
 import { isClientAllowedFile } from "../api/clientValidation.js";
-import type { ImageRecord, UploadItem } from "../types/image.js";
-
-// Polling instead of WebSockets/SSE: simpler, and resilient to free-tier
-// connection drops, at the cost of a little latency + some wasted requests.
-// See README for the fuller tradeoff writeup.
-const POLL_INTERVAL_MS = 1500;
+import type { RejectedItem, StagedItem, SubmittedItem, ValidatingItem } from "../types/image.js";
 
 let tempIdCounter = 0;
-function createTempId(): string {
+function createLocalKey(): string {
   tempIdCounter += 1;
   return `local-${Date.now()}-${tempIdCounter}`;
 }
 
-function imageRecordToUploadItem(record: ImageRecord): UploadItem {
-  return {
-    id: record.id,
-    localKey: record.id,
-    originalFilename: record.originalFilename,
-    status: record.status,
-    rejectionReasons: record.rejectionReasons,
-    createdAt: record.createdAt,
-  };
-}
-
 export function useImageUpload() {
-  const [items, setItems] = useState<UploadItem[]>([]);
-  const itemsRef = useRef<UploadItem[]>(items);
+  const [validating, setValidating] = useState<ValidatingItem[]>([]);
+  const [staged, setStaged] = useState<StagedItem[]>([]);
+  const [submitted, setSubmitted] = useState<SubmittedItem[]>([]);
+  const [rejected, setRejected] = useState<RejectedItem[]>([]);
+  const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    itemsRef.current = items;
-  }, [items]);
-
-  // Hydrate with whatever the server already knows about, so a page reload
-  // doesn't lose history. Only brand-new uploads made in this session start
-  // out purely client-side (a local id + object-URL preview) before the
-  // server has assigned them a real id.
+  // Hydrate with whatever was already submitted in a previous session, so a
+  // page reload doesn't lose history.
   useEffect(() => {
     let cancelled = false;
     listImages({ limit: 50 })
       .then((page) => {
         if (cancelled) return;
-        setItems((current) => {
+        setSubmitted((current) => {
           const existingIds = new Set(current.map((item) => item.id));
-          const hydrated = page.items.filter((item) => !existingIds.has(item.id)).map(imageRecordToUploadItem);
+          const hydrated = page.items.filter((item) => !existingIds.has(item.id)).map((r) => ({ id: r.id, originalFilename: r.originalFilename, createdAt: r.createdAt }));
           return [...current, ...hydrated].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
         });
       })
@@ -56,74 +37,98 @@ export function useImageUpload() {
     };
   }, []);
 
-  const updateItem = useCallback((localKey: string, patch: Partial<UploadItem>) => {
-    setItems((current) => current.map((item) => (item.localKey === localKey ? { ...item, ...patch } : item)));
-  }, []);
+  const addFiles = useCallback((files: FileList | File[]) => {
+    for (const file of Array.from(files)) {
+      const localKey = createLocalKey();
+      const localPreviewUrl = URL.createObjectURL(file);
 
-  const addFiles = useCallback(
-    (files: FileList | File[]) => {
-      for (const file of Array.from(files)) {
-        const localKey = createTempId();
-        const localPreviewUrl = URL.createObjectURL(file);
-        const createdAt = new Date().toISOString();
-
-        if (!isClientAllowedFile(file)) {
-          setItems((current) => [
-            {
-              id: localKey,
-              localKey,
-              originalFilename: file.name,
-              localPreviewUrl,
-              status: "client-rejected",
-              rejectionReasons: ["Unsupported file type (only JPEG, PNG, HEIC are accepted)"],
-              createdAt,
-            },
-            ...current,
-          ]);
-          continue;
-        }
-
-        setItems((current) => [
-          { id: localKey, localKey, originalFilename: file.name, localPreviewUrl, status: "uploading", rejectionReasons: [], createdAt },
+      if (!isClientAllowedFile(file)) {
+        setRejected((current) => [
+          { localKey, originalFilename: file.name, localPreviewUrl, rejectionReasons: ["Unsupported file type (only JPEG, PNG, HEIC are accepted)"] },
           ...current,
         ]);
-
-        uploadImage(file)
-          .then(({ id }) => updateItem(localKey, { id, status: "pending" }))
-          .catch((err) => {
-            updateItem(localKey, { status: "rejected", rejectionReasons: [err instanceof Error ? err.message : "Upload failed"] });
-          });
+        continue;
       }
-    },
-    [updateItem],
-  );
 
-  const removeItem = useCallback(async (localKey: string) => {
-    const target = itemsRef.current.find((item) => item.localKey === localKey);
-    if (!target) return;
-    if (target.localPreviewUrl) URL.revokeObjectURL(target.localPreviewUrl);
-    setItems((current) => current.filter((item) => item.localKey !== localKey));
-    if (!target.id.startsWith("local-")) {
-      await apiDeleteImage(target.id).catch(() => undefined);
+      setValidating((current) => [{ localKey, originalFilename: file.name, localPreviewUrl }, ...current]);
+
+      validateImage(file)
+        .then((outcome) => {
+          setValidating((current) => current.filter((item) => item.localKey !== localKey));
+          if (outcome.status === "accepted") {
+            setStaged((current) => [{ localKey, file, originalFilename: file.name, localPreviewUrl, submitting: false }, ...current]);
+          } else {
+            setRejected((current) => [{ localKey, originalFilename: file.name, localPreviewUrl, rejectionReasons: outcome.rejectionReasons }, ...current]);
+          }
+        })
+        .catch((err) => {
+          setValidating((current) => current.filter((item) => item.localKey !== localKey));
+          setRejected((current) => [
+            { localKey, originalFilename: file.name, localPreviewUrl, rejectionReasons: [err instanceof Error ? err.message : "Could not validate this file"] },
+            ...current,
+          ]);
+        });
     }
   }, []);
 
-  // Poll every still-pending, server-known item until it leaves "pending".
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const pending = itemsRef.current.filter((item) => item.status === "pending" && !item.id.startsWith("local-"));
-      for (const item of pending) {
-        getImage(item.id)
-          .then((record) => {
-            if (record.status !== "pending") {
-              updateItem(item.localKey, { status: record.status, rejectionReasons: record.rejectionReasons });
-            }
-          })
-          .catch(() => undefined);
-      }
-    }, POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
-  }, [updateItem]);
+  /** The X-badge action on a staged (not-yet-submitted) thumbnail. Purely local - nothing was ever persisted. */
+  const unstage = useCallback((localKey: string) => {
+    setStaged((current) => {
+      const target = current.find((item) => item.localKey === localKey);
+      if (target) URL.revokeObjectURL(target.localPreviewUrl);
+      return current.filter((item) => item.localKey !== localKey);
+    });
+  }, []);
 
-  return { items, addFiles, removeItem };
+  const dismissRejected = useCallback((localKey: string) => {
+    setRejected((current) => {
+      const target = current.find((item) => item.localKey === localKey);
+      if (target?.localPreviewUrl) URL.revokeObjectURL(target.localPreviewUrl);
+      return current.filter((item) => item.localKey !== localKey);
+    });
+  }, []);
+
+  const deleteSubmitted = useCallback(async (id: string) => {
+    setSubmitted((current) => current.filter((item) => item.id !== id));
+    await apiDeleteImage(id).catch(() => undefined);
+  }, []);
+
+  /**
+   * Submits every currently-staged item. The server re-validates each one
+   * (see services/image.service.ts) rather than trusting the earlier
+   * validate call, so a rare race (e.g. someone else just submitted a
+   * near-duplicate) is still possible - that one moves to Rejected instead
+   * of Accepted, with the server's reason.
+   */
+  const submit = useCallback(async () => {
+    setSubmitting(true);
+    const toSubmit = staged;
+    const toSubmitKeys = new Set(toSubmit.map((item) => item.localKey));
+    setStaged((current) => current.map((s) => (toSubmitKeys.has(s.localKey) ? { ...s, submitting: true, submitError: undefined } : s)));
+
+    await Promise.all(
+      toSubmit.map(async (item) => {
+        try {
+          const result = await submitImage(item.file);
+          setStaged((current) => current.filter((s) => s.localKey !== item.localKey));
+          URL.revokeObjectURL(item.localPreviewUrl);
+          if (result.accepted) {
+            setSubmitted((current) => [{ id: result.image.id, originalFilename: result.image.originalFilename, createdAt: result.image.createdAt }, ...current]);
+          } else {
+            setRejected((current) => [
+              { localKey: item.localKey, originalFilename: item.originalFilename, rejectionReasons: result.outcome.rejectionReasons },
+              ...current,
+            ]);
+          }
+        } catch (err) {
+          setStaged((current) =>
+            current.map((s) => (s.localKey === item.localKey ? { ...s, submitting: false, submitError: err instanceof Error ? err.message : "Submit failed" } : s)),
+          );
+        }
+      }),
+    );
+    setSubmitting(false);
+  }, [staged]);
+
+  return { validating, staged, submitted, rejected, submitting, addFiles, unstage, dismissRejected, deleteSubmitted, submit };
 }

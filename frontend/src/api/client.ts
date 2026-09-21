@@ -1,4 +1,4 @@
-import type { ImageListResponse, ImageRecord } from "../types/image.js";
+import type { ImageListResponse, ImageRecord, ValidationOutcome } from "../types/image.js";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:3000";
 
@@ -21,18 +21,30 @@ async function parseErrorMessage(res: Response): Promise<string> {
   }
 }
 
-export async function uploadImage(file: File): Promise<{ id: string; status: "pending" }> {
+/** Runs the full server-side pipeline against a file. Never persists anything. */
+export async function validateImage(file: File): Promise<ValidationOutcome> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${API_BASE_URL}/images`, { method: "POST", body: form });
+  const res = await fetch(`${API_BASE_URL}/images/validate`, { method: "POST", body: form });
   if (!res.ok) throw new ApiError(await parseErrorMessage(res), res.status);
   return res.json();
 }
 
-export async function getImage(id: string): Promise<ImageRecord> {
-  const res = await fetch(`${API_BASE_URL}/images/${id}`);
+export type SubmitOutcome = { accepted: true; image: ImageRecord } | { accepted: false; outcome: ValidationOutcome };
+
+/**
+ * Re-validates server-side and, only if it's still accepted, uploads it and
+ * creates its row. A 201 means it was persisted; a 200 means the re-check
+ * rejected it (e.g. a race with another just-accepted near-duplicate) and
+ * nothing was persisted.
+ */
+export async function submitImage(file: File): Promise<SubmitOutcome> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE_URL}/images/submit`, { method: "POST", body: form });
   if (!res.ok) throw new ApiError(await parseErrorMessage(res), res.status);
-  return res.json();
+  if (res.status === 201) return { accepted: true, image: await res.json() };
+  return { accepted: false, outcome: await res.json() };
 }
 
 export async function listImages(params: { status?: ImageRecord["status"]; limit?: number; cursor?: string } = {}): Promise<ImageListResponse> {

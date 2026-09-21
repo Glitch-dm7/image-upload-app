@@ -1,8 +1,18 @@
 # Image Upload & Validation App
 
-A full-stack app where users upload images that get automatically categorized
-into **Accepted** or **Rejected** by a server-side validation pipeline
-(format, size, blur, face detection, duplicate detection).
+A full-stack app where users upload images that get automatically checked
+against a server-side validation pipeline (format, size, blur, face
+detection, duplicate detection) before anything is saved.
+
+**Upload flow:** dropping files runs each one through `POST /images/validate`
+immediately and shows the verdict - nothing is written to the database or
+storage yet. Accepted files sit in a review batch where you can click the
+X badge on a thumbnail to drop it before committing. Clicking **Submit**
+calls `POST /images/submit` for the remaining accepted files, which
+re-validates each one server-side (never trusting the client's earlier
+"this passed" claim) and only then uploads it and creates its row.
+Rejected files - whether caught client-side (bad extension) or
+server-side - are shown for information only and are never persisted.
 
 ## Stack
 
@@ -21,7 +31,16 @@ into **Accepted** or **Rejected** by a server-side validation pipeline
 ## Repo layout
 
 ```
-backend/    Hono API, validation pipeline, Drizzle schema/migrations
+backend/
+  src/routes/         Hono route wiring only
+  src/controllers/    HTTP parsing (multipart, params, query) + response shaping
+  src/services/       business logic - orchestrates the validation pipeline against
+                       the repository and storage; the only layer that decides
+                       whether something gets persisted
+  src/repositories/   all Drizzle/DB access
+  src/validation/     the pipeline itself + each rule as an isolated, pure-ish function
+  src/storage/        Supabase-S3-compatible client wrapper
+  src/db/             schema, migrations, connection
 frontend/   React + Vite app
 ```
 
@@ -109,13 +128,24 @@ conversion, per the comments in `backend/test/unit/heicConversion.test.ts`.
 
 ## Known tradeoffs
 
-- **In-process background task instead of a real job queue** (Redis/BullMQ/
-  SQS). An upload's validation runs as a fire-and-forget async function in
-  the same process, not a durable queue — chosen to avoid needing a second
-  always-on service on free hosting tiers (Render's free tier spins down).
-  The real cost: a job in flight when the server restarts or redeploys is
-  silently lost (the row stays `pending` forever). A real queue would
-  survive that. See `backend/src/jobs/processUpload.ts`.
+- **No background job (and no "pending" DB state) at all, by design.** An
+  earlier version of this app followed the common upload pattern - create a
+  `pending` row immediately, validate asynchronously in a fire-and-forget
+  background task, update the row in place - which is exactly the kind of
+  thing that would otherwise need a real queue (Redis/BullMQ/SQS) in
+  production, since an in-process fire-and-forget job is silently lost if
+  the server restarts mid-job. That entire class of problem went away once
+  the flow changed to **validate before persisting anything**: a rejected
+  upload is never written to the DB at all, and an accepted one is only
+  written once the user explicitly submits it - by the time a row exists,
+  it's already in its final state, so there's nothing left to update
+  asynchronously. `POST /images/validate` and `POST /images/submit` are
+  both plain, synchronous request/response calls (see
+  `backend/src/services/image.service.ts`). The tradeoff didn't disappear so
+  much as move: `/images/submit` re-runs the full pipeline a second time
+  (never trusting the client's earlier validate call), so submitting is a
+  bit slower than a naive "trust the earlier check" design would be - a
+  deliberate correctness-over-speed choice.
 - **O(n) pHash comparison** against every accepted row's hash, for the
   similarity check. Fine at demo scale; a real system would bucket hashes
   (LSH) or use a vector index instead of a linear Hamming-distance scan. The
@@ -127,10 +157,6 @@ conversion, per the comments in `backend/test/unit/heicConversion.test.ts`.
   WASM backend rather than `tfjs-node` specifically to avoid a native-addon
   compile/download step — slower inference, but it installs and runs
   identically on any host (including Render's free tier).
-- **Polling instead of WebSockets/SSE** for upload status updates. Simpler
-  and more resilient to a free-tier connection dropping mid-request, at the
-  cost of a little latency and some wasted requests every 1.5s while an
-  image is pending.
 - **Cursor pagination** on `GET /images`, keyed on `(createdAt, id)` rather
   than offset — stays correct under concurrent inserts and avoids Postgres
   scanning-and-discarding rows for a large `OFFSET`. Offset pagination would
